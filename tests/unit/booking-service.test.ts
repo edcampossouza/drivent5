@@ -1,13 +1,19 @@
 import faker from '@faker-js/faker';
-import { Enrollment, Address, Ticket, TicketType } from '@prisma/client';
-import { mockEnrollment, mockTicket, mockTicketType } from '../factories';
+import { Enrollment, Address, Ticket, TicketType, Booking, Room } from '@prisma/client';
+import { mockEnrollment, mockRoom, mockTicket, mockTicketType } from '../factories';
+import { mockBookings } from '../factories/booking-factory';
 import enrollmentRepository from '@/repositories/enrollment-repository';
 import ticketsRepository from '@/repositories/tickets-repository';
 import bookingService from '@/services/booking-service';
+import roomRepository from '@/repositories/room-repository';
 import { cannotBookingError } from '@/errors/cannot-booking-error';
+import { notFoundError } from '@/errors/not-found-error';
+import bookingRepository from '@/repositories/booking-repository';
+
+const bookingErrorObj = cannotBookingError();
+const notFoundErrorObj = notFoundError();
 
 describe('checkEnrollment tests', () => {
-  const bookingError = cannotBookingError();
   it('should throw error when user does not have an enrollment', async () => {
     jest
       .spyOn(enrollmentRepository, 'findWithAddressByUserId')
@@ -37,7 +43,7 @@ describe('checkEnrollment tests', () => {
           return null;
         });
       const promise = bookingService.checkEnrollmentTicket(userId);
-      expect(promise).rejects.toEqual(bookingError);
+      expect(promise).rejects.toEqual(bookingErrorObj);
     });
 
     it('should throw error when ticket status is reserved', async () => {
@@ -50,7 +56,7 @@ describe('checkEnrollment tests', () => {
           return mockTicket(ticketType, 1, 'RESERVED');
         });
       const promise = bookingService.checkEnrollmentTicket(userId);
-      expect(promise).rejects.toEqual(bookingError);
+      expect(promise).rejects.toEqual(bookingErrorObj);
     });
 
     it('should throw error when ticket is remote', async () => {
@@ -63,7 +69,7 @@ describe('checkEnrollment tests', () => {
           return mockTicket(ticketType, 1, 'PAID');
         });
       const promise = bookingService.checkEnrollmentTicket(userId);
-      expect(promise).rejects.toEqual(bookingError);
+      expect(promise).rejects.toEqual(bookingErrorObj);
     });
 
     it('should throw error when ticket does not include hotel', async () => {
@@ -76,7 +82,75 @@ describe('checkEnrollment tests', () => {
           return mockTicket(ticketType, 1, 'PAID');
         });
       const promise = bookingService.checkEnrollmentTicket(userId);
-      expect(promise).rejects.toEqual(bookingError);
+      expect(promise).rejects.toEqual(bookingErrorObj);
     });
+
+    it('should not throw error when ticket is valid', async () => {
+      const userId = faker.datatype.number({ precision: 1 });
+
+      jest
+        .spyOn(ticketsRepository, 'findTicketByEnrollmentId')
+        .mockImplementationOnce(async (): Promise<Ticket & { TicketType: TicketType }> => {
+          const ticketType = mockTicketType({ includesHotel: true, isRemote: false });
+          return mockTicket(ticketType, 1, 'PAID');
+        });
+      const promise = bookingService.checkEnrollmentTicket(userId);
+      expect(promise).resolves.toBe(undefined);
+    });
+  });
+});
+
+describe('checkValidBooking tests', () => {
+  let validRoom = mockRoom({ capacity: 3 });
+  it('should throw notFoundError when room is not found', async () => {
+    jest.spyOn(roomRepository, 'findById').mockImplementationOnce(() => null);
+    jest.spyOn(bookingRepository, 'findByRoomId').mockImplementationOnce(async () => {
+      return [];
+    });
+    const promise = bookingService.checkValidBooking(validRoom.id);
+    expect(promise).rejects.toEqual(notFoundErrorObj);
+  });
+
+  it('should throw cannotBookingError when not enough rooms', async () => {
+    validRoom = mockRoom({ capacity: 3 });
+    jest.spyOn(roomRepository, 'findById').mockImplementationOnce(async () => validRoom);
+    jest.spyOn(bookingRepository, 'findByRoomId').mockImplementationOnce(async () => {
+      return mockBookings(1, validRoom, 3);
+    });
+    const promise = bookingService.checkValidBooking(validRoom.id);
+    expect(promise).rejects.toEqual(bookingErrorObj);
+  });
+});
+
+describe('getBooking tests', () => {
+  // bookings[] is an in-memory database for test bookings
+  const bookings: (Booking & { Room: Room })[] = [];
+  const validRoom = mockRoom({ capacity: 4 });
+  const userId = faker.datatype.number({ precision: 1, min: 1 });
+  for (let i = 0; i < 3; i++) {
+    bookings.push(mockBookings(userId, validRoom, 1)[0]);
+  }
+  beforeEach(() => {
+    jest
+      .spyOn(bookingRepository, 'findByUserId')
+      .mockImplementationOnce(async (userId: number): Promise<Booking & { Room: Room }> => {
+        return bookings.find((b) => b.userId === userId);
+      });
+  });
+  it('should throw notFoundError when id is invalid', () => {
+    const theUserId = 0;
+    const promise = bookingService.getBooking(theUserId);
+    expect(promise).rejects.toEqual(notFoundErrorObj);
+  });
+
+  it('should throw notFoundError when user id is not found', () => {
+    const theUserId = userId + 1;
+    const promise = bookingService.getBooking(theUserId);
+    expect(promise).rejects.toEqual(notFoundErrorObj);
+  });
+
+  it('should return the user id', () => {
+    const promise = bookingService.getBooking(userId);
+    expect(promise).resolves.toEqual(bookings[0]);
   });
 });
